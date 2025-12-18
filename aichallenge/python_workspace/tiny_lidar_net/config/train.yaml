@@ -2,17 +2,39 @@ data:
   # データセットのディレクトリパス
   train_dir: "/aichallenge/python_workspace/tiny_lidar_net/dataset/train"
   val_dir: "/aichallenge/python_workspace/tiny_lidar_net/dataset/val"
+  # images folder name inside each sequence directory
+  image_dir: "images"
+  # Number of scans per image (each image covers this many consecutive scans)
+  img_scan_ratio: 4
+  # Image preprocessing used when loading images for ResNet
+  img_size: 224
+  img_mean: [0.485, 0.456, 0.406]
+  img_std: [0.229, 0.224, 0.225]
 
 model:
-  # "TinyLidarNet" または "TinyLidarNetSmall"
-  name: "TinyLidarNet"
+  # "TinyLidarNet" または "TinyLidarImageNet"
+  name: "TinyLidarImageNet"
   # LiDARのスキャン点数
   input_dim: 1080
   # 出力次元（[accel, steer]）
   output_dim: 2
+  # --- ResNet backbone options (used when name == TinyLidarImageNet) ---
+  # Use torchvision pretrained weights for resnet50
+  resnet_pretrained: false
+  # Path to a ResNet checkpoint (state_dict or checkpoint dict). If provided,
+  # it will be loaded into the ResNet backbone (fc keys are ignored).
+  resnet_checkpoint: "/aichallenge/python_workspace/tiny_lidar_net/weights/resnet50.pth"
+  # If true, freeze the ResNet backbone parameters during training
+  freeze_resnet: false
+  # If you want to use a smaller LiDAR branch, set true (not recommended)
+  use_small_lidar: false
+  # ResNet type: 'resnet50' (torchvision) or 'resnet15' (lightweight custom)
+  resnet_type: "resnet50"
+  # Output dimension of the small ResNet backbone (used when resnet_type == 'resnet15')
+  resnet_out_dim: 256
 
 train:
-  batch_size: 64
+  batch_size: 15
   num_workers: 4
   epochs: 100
   lr: 0.001

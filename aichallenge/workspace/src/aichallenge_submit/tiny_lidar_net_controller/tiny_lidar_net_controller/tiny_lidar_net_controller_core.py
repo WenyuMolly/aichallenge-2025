@@ -1,8 +1,8 @@
 import logging
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Optional
 
-from model.tinylidarnet import TinyLidarNetNp, TinyLidarNetSmallNp
+from model.tinylidarnet import TinyLidarNetNp, TinyLidarNetSmallNp, TinyLidarImageNetNp
 
 
 class TinyLidarNetCore:
@@ -31,7 +31,12 @@ class TinyLidarNetCore:
         ckpt_path: str = '',
         acceleration: float = 0.1,
         control_mode: str = 'ai',
-        max_range: float = 30.0
+        max_range: float = 30.0,
+        model_type: str = 'multimodal',
+        resnet_out_dim: int = 256,
+        image_size: int = 224,
+        img_mean: Tuple[float, float, float] = (0.485, 0.456, 0.406),
+        img_std: Tuple[float, float, float] = (0.229, 0.224, 0.225),
     ):
         """Initializes the TinyLidarNetCore with specified parameters.
 
@@ -60,26 +65,42 @@ class TinyLidarNetCore:
         self.acceleration = acceleration
         self.control_mode = control_mode.lower()
         self.max_range = max_range
+        self.model_type = model_type.lower()
+        self.resnet_out_dim = resnet_out_dim
+        self.image_size = image_size
+        self.img_mean = img_mean
+        self.img_std = img_std
         self.logger = logging.getLogger(__name__)
 
-        if self.architecture == 'small':
-            self.model = TinyLidarNetSmallNp(input_dim=self.input_dim, output_dim=self.output_dim)
+        if self.model_type == 'multimodal':
+            self.model = TinyLidarImageNetNp(
+                input_dim=self.input_dim,
+                output_dim=self.output_dim,
+                resnet_out_dim=self.resnet_out_dim,
+                image_size=self.image_size
+            )
+            self.logger.info("Initialized multimodal TinyLidarImageNet model")
         else:
-            self.model = TinyLidarNetNp(input_dim=self.input_dim, output_dim=self.output_dim)
+            if self.architecture == 'small':
+                self.model = TinyLidarNetSmallNp(input_dim=self.input_dim, output_dim=self.output_dim)
+            else:
+                self.model = TinyLidarNetNp(input_dim=self.input_dim, output_dim=self.output_dim)
 
         if ckpt_path:
             self._load_weights(ckpt_path)
         else:
             self.logger.warning("No weight file provided. Using randomly initialized weights.")
 
-    def process(self, ranges: np.ndarray) -> Tuple[float, float]:
+    def process(self, ranges: np.ndarray, img_features: Optional[np.ndarray] = None) -> Tuple[float, float]:
         """Runs the complete inference pipeline on raw LiDAR data.
 
         This method handles data cleaning (NaN/Inf removal), resizing, normalization,
-        and model inference.
+        and model inference. If multimodal, image features should also be provided.
 
         Args:
             ranges (np.ndarray): A 1D numpy array containing raw LiDAR range data.
+            img_features (Optional[np.ndarray]): Image feature vector for multimodal mode,
+                shape (resnet_out_dim,) or (batch=1, resnet_out_dim).
 
         Returns:
             Tuple[float, float]: A tuple containing (acceleration, steering_angle).
@@ -92,7 +113,17 @@ class TinyLidarNetCore:
         x = np.expand_dims(np.expand_dims(processed_ranges, axis=0), axis=1)
 
         # 2. Inference
-        outputs = self.model(x)[0]
+        if self.model_type == 'multimodal':
+            # If no image features available yet, use zero features as fallback
+            if img_features is None:
+                self.logger.warning("No image features available; using zero features as fallback")
+                img_features = np.zeros((1, self.resnet_out_dim), dtype=np.float32)
+            # Ensure img_features is 2D: (1, resnet_out_dim)
+            if img_features.ndim == 1:
+                img_features = np.expand_dims(img_features, axis=0)
+            outputs = self.model(x, img_features)[0]
+        else:
+            outputs = self.model(x)[0]
 
         # 3. Post-process
         if self.control_mode == "ai":
@@ -101,7 +132,7 @@ class TinyLidarNetCore:
             accel = self.acceleration
 
         steer = float(np.clip(outputs[1], -1.0, 1.0))
-
+        # print(f"Predicted commands - Accel: {accel:.3f}, Steer: {steer:.3f}")
         return accel, steer
 
     def _load_weights(self, path: str) -> None:

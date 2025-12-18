@@ -6,10 +6,18 @@
       input_dim: 1080            # LiDARスキャンの入力次元
       output_dim: 2              # 出力（steering, throttleなど）
       architecture: "normal"      # "normal" または "small"
+      model_type: "multimodal"         # "lidar" (LiDAR only) または "multimodal" (LiDAR + Image)
       ckpt_path: "/path/to/tinylidarnet_weights.npy"
+      resnet_out_dim: 256        # ResNet output dim (used if model_type == multimodal)
+
+    camera:
+      image_topic: "/sensing/camera/image_raw"  # Image topic to subscribe
+      image_size: 224                         # Resize images to this size
+      img_mean: [0.485, 0.456, 0.406]        # ImageNet normalization mean
+      img_std: [0.229, 0.224, 0.225]         # ImageNet normalization std
 
     max_range: 30.0              # LiDARの最大レンジ（メートル）
     control_mode: "fixed"          # "ai" または "fixed"
-    acceleration: 1.0            # 固定加速度コマンド mode:fixed の場合に使用
+    acceleration: 0.3            # 固定加速度コマンド mode:fixed の場合に使用
 
     debug: false

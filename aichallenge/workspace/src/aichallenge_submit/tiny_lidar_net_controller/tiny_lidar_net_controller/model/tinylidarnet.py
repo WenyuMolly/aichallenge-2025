@@ -240,6 +240,121 @@ class TinyLidarNetNp:
         return tanh(linear(x, self.params['fc4_weight'], self.params['fc4_bias']))
 
 
+class TinyLidarImageNetNp:
+    """NumPy implementation of fused TinyLidarImageNet (multimodal LiDAR + Image).
+
+    This class performs early fusion: image features are projected to LiDAR conv
+    channels and fused at the conv level before flattening and passing through FC.
+
+    Attributes:
+        params (dict): Stores weights and biases for all layers (LiDAR + Image + fusion).
+        strides (dict): Stride values for LiDAR conv layers.
+        shapes (dict): Parameter shapes for initialization.
+    """
+
+    def __init__(self, input_dim=1080, output_dim=2, resnet_out_dim=256, image_size=224):
+        """Initializes TinyLidarImageNetNp.
+
+        Args:
+            input_dim (int): LiDAR scan dimension. Defaults to 1080.
+            output_dim (int): Output dimension (steer, accel). Defaults to 2.
+            resnet_out_dim (int): Image feature dimension. Defaults to 256.
+            image_size (int): Expected image size. Defaults to 224.
+        """
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.resnet_out_dim = resnet_out_dim
+        self.image_size = image_size
+        self.params = {}
+
+        # LiDAR conv strides
+        self.strides = {'conv1': 4, 'conv2': 4, 'conv3': 2, 'conv4': 1, 'conv5': 1}
+
+        # LiDAR conv shapes (matching TinyLidarNet)
+        self.shapes = {
+            'conv1_weight': (24, 1, 10),  'conv1_bias': (24,),
+            'conv2_weight': (36, 24, 8),  'conv2_bias': (36,),
+            'conv3_weight': (48, 36, 4),  'conv3_bias': (48,),
+            'conv4_weight': (64, 48, 3),  'conv4_bias': (64,),
+            'conv5_weight': (64, 64, 3),  'conv5_bias': (64,),
+        }
+
+        # Fusion: project image features to conv channel space
+        conv_channels = 64  # output channels from conv5
+        self.shapes.update({
+            'img_to_channels_weight': (conv_channels, resnet_out_dim),
+            'img_to_channels_bias': (conv_channels,),
+            'fusion_conv_weight': (conv_channels, conv_channels * 2, 1),
+            'fusion_conv_bias': (conv_channels,),
+        })
+
+        # FC layers (unchanged after fusion)
+        flatten_dim = self._get_conv_output_dim()
+        self.shapes.update({
+            'fc1_weight': (100, flatten_dim), 'fc1_bias': (100,),
+            'fc2_weight': (50, 100),          'fc2_bias': (50,),
+            'fc3_weight': (10, 50),           'fc3_bias': (10,),
+            'fc4_weight': (output_dim, 10),   'fc4_bias': (output_dim,),
+        })
+
+        self._initialize_weights()
+
+    def _get_conv_output_dim(self):
+        """Calculates flattened dimension after conv layers."""
+        l = self.input_dim
+        for i in range(1, 6):
+            k = self.shapes[f'conv{i}_weight'][2]
+            s = self.strides[f'conv{i}']
+            l = (l - k) // s + 1
+        c = self.shapes['conv5_weight'][0]
+        return c * l
+
+    def _initialize_weights(self):
+        """Initializes weights using Kaiming Normal and biases to zero."""
+        for name, shape in self.shapes.items():
+            if name.endswith('_weight'):
+                fan_out = shape[0] * (shape[2] if 'conv' in name else 1)
+                self.params[name] = kaiming_normal_init(shape, fan_out)
+            elif name.endswith('_bias'):
+                self.params[name] = zeros_init(shape)
+
+    def __call__(self, lidar_x, img_x):
+        """Forward pass with LiDAR and image inputs.
+
+        Args:
+            lidar_x (np.ndarray): LiDAR data, shape (batch, 1, input_dim).
+            img_x (np.ndarray): Image features, shape (batch, resnet_out_dim).
+
+        Returns:
+            np.ndarray: Output predictions, shape (batch, output_dim).
+        """
+        import numpy as np
+        # LiDAR conv pipeline
+        x = relu(conv1d(lidar_x, self.params['conv1_weight'], self.params['conv1_bias'], self.strides['conv1']))
+        x = relu(conv1d(x, self.params['conv2_weight'], self.params['conv2_bias'], self.strides['conv2']))
+        x = relu(conv1d(x, self.params['conv3_weight'], self.params['conv3_bias'], self.strides['conv3']))
+        x = relu(conv1d(x, self.params['conv4_weight'], self.params['conv4_bias'], self.strides['conv4']))
+        x = relu(conv1d(x, self.params['conv5_weight'], self.params['conv5_bias'], self.strides['conv5']))
+        # x: (batch, 64, L)
+
+        # Early fusion: project image features to conv channels and expand
+        img_proj = linear(img_x, self.params['img_to_channels_weight'], self.params['img_to_channels_bias'])
+        img_proj = relu(img_proj)  # (batch, 64)
+        img_proj_expanded = np.tile(img_proj[:, :, np.newaxis], (1, 1, x.shape[-1]))  # (batch, 64, L)
+
+        # Concatenate and fuse
+        fused = np.concatenate([x, img_proj_expanded], axis=1)  # (batch, 128, L)
+        fused = conv1d(fused, self.params['fusion_conv_weight'], self.params['fusion_conv_bias'], stride=1)
+        fused = relu(fused)  # (batch, 64, L)
+
+        # Flatten and FC layers
+        fused = flatten(fused)
+        fused = relu(linear(fused, self.params['fc1_weight'], self.params['fc1_bias']))
+        fused = relu(linear(fused, self.params['fc2_weight'], self.params['fc2_bias']))
+        fused = relu(linear(fused, self.params['fc3_weight'], self.params['fc3_bias']))
+        return tanh(linear(fused, self.params['fc4_weight'], self.params['fc4_bias']))
+
+
 class TinyLidarNetSmallNp:
     """NumPy implementation of TinyLidarNetSmall (Conv3 + FC3).
 
